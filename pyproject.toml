@@ -71,6 +71,9 @@ requires = [
 ]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["tap_taxjar"]
+
 # This configuration can be used to customize tox tests as well as other test frameworks like flake8 and mypy
 [tool.tox]
 min_version = "4.22"
