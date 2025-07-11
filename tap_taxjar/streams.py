@@ -4,63 +4,81 @@ from __future__ import annotations
 
 import typing as t
 from importlib import resources
+from datetime import datetime, timedelta
+import requests
 
-from singer_sdk import typing as th  # JSON Schema typing helpers
+from singer_sdk import typing as th
 
 from tap_taxjar.client import TaxJarStream
 
-# TODO: Delete this is if not using json files for schema definition
-SCHEMAS_DIR = resources.files(__package__) / "schemas"
-# TODO: - Override `UsersStream` and `GroupsStream` with your own stream definition.
-#       - Copy-paste as many times as needed to create multiple stream types.
 
+class TransactionsStream(TaxJarStream):
+    """Stream for detailed transaction records."""
 
-class UsersStream(TaxJarStream):
-    """Define custom stream."""
-
-    name = "users"
-    path = "/users"
-    primary_keys: t.ClassVar[list[str]] = ["id"]
+    name = "transactions"
+    path = "/transactions"
+    primary_keys: t.ClassVar[list[str]] = ["transaction_id"]
     replication_key = None
-    # Optionally, you may also use `schema_filepath` in place of `schema`:
-    # schema_filepath = SCHEMAS_DIR / "users.json"  # noqa: ERA001
     schema = th.PropertiesList(
-        th.Property("name", th.StringType),
-        th.Property(
-            "id",
-            th.StringType,
-            description="The user's system ID",
-        ),
-        th.Property(
-            "age",
-            th.IntegerType,
-            description="The user's age in years",
-        ),
-        th.Property(
-            "email",
-            th.StringType,
-            description="The user's email address",
-        ),
-        th.Property("street", th.StringType),
-        th.Property("city", th.StringType),
-        th.Property(
-            "state",
-            th.StringType,
-            description="State name in ISO 3166-2 format",
-        ),
-        th.Property("zip", th.StringType),
+        th.Property("transaction_id", th.StringType),
+        th.Property("transaction_date", th.StringType),
+        th.Property("amount", th.StringType),
+        th.Property("sales_tax", th.StringType),
+        th.Property("from_country", th.StringType),
+        th.Property("to_country", th.StringType),
+        th.Property("user_id", th.IntegerType),
+        th.Property("transaction_reference_id", th.StringType),
+        th.Property("to_zip", th.StringType),
+        th.Property("to_street", th.StringType),
+        th.Property("to_state", th.StringType),
+        th.Property("to_city", th.StringType),
+        th.Property("shipping", th.StringType),
+        th.Property("from_zip", th.StringType),
+        th.Property("from_street", th.StringType),
+        th.Property("from_state", th.StringType),
+        th.Property("from_city", th.StringType),
+        th.Property("exemption_type", th.StringType),
+        th.Property("customer_id", th.StringType),
+        th.Property("provider", th.StringType),
+        th.Property("line_items", th.ArrayType(
+            th.ObjectType(
+                th.Property("unit_price", th.StringType),
+                th.Property("sales_tax", th.StringType),
+                th.Property("quantity", th.IntegerType),
+                th.Property("product_tax_code", th.StringType),
+                th.Property("product_identifier", th.StringType),
+                th.Property("id", th.IntegerType),
+                th.Property("discount", th.StringType),
+                th.Property("description", th.StringType),
+            )
+        )),
     ).to_dict()
 
+    def get_records(self, context: dict | None) -> t.Iterable[dict]:
+        days_back = self.config.get("days_back", 21)
+        start_date = datetime.utcnow() - timedelta(days=days_back)
+        end_date = datetime.utcnow()
+        current_date = start_date
 
-class GroupsStream(TaxJarStream):
-    """Define custom stream."""
-
-    name = "groups"
-    path = "/groups"
-    primary_keys: t.ClassVar[list[str]] = ["id"]
-    replication_key = "modified"
-    schema = th.PropertiesList(
-        th.Property("name", th.StringType),
-        th.Property("id", th.StringType),
-        th.Property("modified", th.DateTimeType),
-    ).to_dict()
+        while current_date <= end_date:
+            current_date_str = current_date.strftime("%Y/%m/%d")
+            self.logger.info(f"Fetching transactions from {current_date_str}")
+            url = f"{self.url_base}/transactions/orders"
+            params = {
+                "transaction_date": current_date_str,
+                "provider": "upsellery"
+            }
+            headers = self.authenticator.auth_headers
+            resp = requests.get(url, headers=headers, params=params)
+            orders = resp.json()["orders"]
+            order_count = 0
+            for order in orders:
+                params = {'provider': 'upsellery'}
+                detail_resp = requests.get(
+                    f"{self.url_base}/transactions/orders/{order}", headers=headers, params=params
+                )
+                if detail_resp.ok:
+                    order_count +=1
+                    yield detail_resp.json().get("order", {})
+            self.logger.info(f"Loaded {order_count} transactions from {current_date_str}")
+            current_date += timedelta(days=1)
